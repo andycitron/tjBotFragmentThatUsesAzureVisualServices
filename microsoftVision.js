@@ -27,6 +27,7 @@ const FACIALRECOGNITION_ENDPOINT=config.azureVisionEndpoint;
 const VISUALRECOGNITION_KEY=config.azureVisualRecognitionKey;
 const VISUALRECOGNITION_ENDPOINT=config.azureVisualRecognitionEndpoint;
 
+
 /*
  * Start of functions that recognize people in a photo
  */
@@ -657,37 +658,35 @@ exports.MSAzureSeeObjects = function(filename, callback) {
 
             response.on('end', function () {
 			
-			  console.log("ms visual object detection returned " + responseText);
+               console.log("ms visual object detection returned " + responseText);
 			  
-			  responseText = responseText.replace("undefined", "");
-			  // pull values out of returned info and populate callback structure	
-			  jsonResponseText = JSON.parse(responseText);
+		responseText = responseText.replace("undefined", "");
+		// pull values out of returned info and populate callback structure	
+		jsonResponseText = JSON.parse(responseText);
 			  
-			  console.log("ms visual object jsonResponseText.description.captions  " + jsonResponseText.description.captions);
-			  
-			  if (jsonResponseText.description == undefined) {
-				result.photoDescription = "Nothing was seen";  				  
-			    result.descriptionOfObjects = "";
-              } else {
+		if (jsonResponseText.description == undefined) {
+		    result.photoDescription = "Nothing was seen";  				  
+	            result.descriptionOfObjects = "";
+                } else {
 				  
-                array = jsonResponseText.description.captions;  
-                array.forEach(function (item, index) {                // I've only ever seen one object returned, so a forEach loop might be overkill
+                  array = jsonResponseText.description.captions;  
+                  array.forEach(function (item, index) {                // I've only ever seen one object returned, so a forEach loop might be overkill
                      console.log(index, item );
                      result.photoDescription = item.text; 
 				     
-                });                                
+                  });                                
                 
-                // then do for each jsonResponseText.description.tags....
-                array = jsonResponseText.description.tags;
-                array.forEach(function (item, index) {
+                  // then do for each jsonResponseText.description.tags....
+                  array = jsonResponseText.description.tags;
+                  array.forEach(function (item, index) {
                      console.log(index, item );
                      result.descriptionOfObjects += " " + item + ","; 
-                });
+                  });
                                                  
-                console.log("MSAzureSeeObjects on end: "+ result.photoDescription);
-                console.log("descriptionOfObjects " + result.descriptionOfObjects);
-              }  
-              callback(result);               
+                  console.log("MSAzureSeeObjects on end: "+ result.photoDescription);
+                  console.log("descriptionOfObjects " + result.descriptionOfObjects);
+                }  
+                callback(result);               
             });
             
           });
@@ -697,4 +696,196 @@ exports.MSAzureSeeObjects = function(filename, callback) {
 
         };
       });
+    }  
+    
+// this next code looks for text in a photo and attempts to read it.  That is, Optical Character Recognition (OCR)
+exports.MSAzureReadText = function(filename, callback) {
+  
+
+  var urlPath = "/vision/v3.2/read/analyze?model-version=latest";
+  
+  var result = {                                                        // use this for callback, in some error cases.  otherwise called subroutine calls the 'callback' routine
+	 
+     "readText": "I didn't find any text in what I read"
+    
+  };
+  var OCRDone = false;
+  var statusCode = "404"
+  var operationLocation = "";                                           // initial ocr request returns a URL which will contain the read text
+
+  console.log("MSAzureReadText Processing file " + filename );
+
+  fs.readFile(filename, function(err, data) {
+    if (err) {
+        console.log("read jpg fail " + err);
+        callback("Read text was unable to read the file which contained the text");
+    } else {
+		console.log("MSAzureReadText POSTing to " + urlPath);
+
+        var post_options = {
+            host: VISUALRECOGNITION_ENDPOINT +".cognitiveservices.azure.com", 
+            method: 'POST',
+            data: data,
+            path: urlPath,
+            headers: {
+                'Content-Type': 'application/octet-stream',
+                'Ocp-Apim-Subscription-Key': VISUALRECOGNITION_KEY,
+                'Content-Length': data.length
+            }
+        };
+
+        var post_req = https.request(post_options, function (response) {
+			
+	    console.log("MSAzureReadText host " + post_options.host + " using path " + post_options.path);
+			
+            // there's actually no response data recieved with this request.  Headers contain all the information
+            var responseText;
+            response.on('data', function (rdata) {
+                responseText+=rdata;
+            });
+                       
+            response.on('end', function () {			
+			  // response status needs to be 202 accepted.  Operation-Location header is 
+			   statusCode = response.statusCode;
+               operationLocation = response.headers["operation-location"];
+			   console.log("start OCR statusCode is " + statusCode + " Operation-Location is " + operationLocation);
+			   
+		//for (header in response.headers) {                     // for debug
+                //   var value = response.headers[header];
+                //   console.log(header + ': ' + value);
+                //}
+			  			  
+	        if (statusCode == "202") {                            
+			  
+		    // call routine that gets the result, that routine won't exit until it gets an error or the result 
+		    getOCRResult(operationLocation, callback);              // subroutine will call invokers callback with resulting string 
+			    
+		} else {     // if status code isn't 202  
+		    result.readText = result.readText + ".  Status code is " + statusCode; 
+		    callback(result.readText);
+		}	        
+            });
+            
+          });
+          
+          // Handle request errors.  I haven't actually seen this execute
+          post_req.on('error', function(error) {
+            console.error("Error making read text request: " + error);
+            callback(result.readText + " Error while issuing read text request: " + error);
+          });
+          
+          //console.log("about to issue post_req.write" + data)
+          post_req.write(data);
+          post_req.end();
+
+        };
+      });
     }    
+
+function getOCRResult(operationLocation, callback) {
+  
+  var endOfHostPart = operationLocation.indexOf(".com")+".com".length;
+  var hostPart = operationLocation.substring("https://".length, endOfHostPart).trim();  
+  var statusCode = "404";                                               // assume the worst
+  var OCRStatus = "unsuccessful";                                       // assume the worst
+  var stringToRead = "No text found on page ";
+
+  var urlPath = operationLocation.substring(endOfHostPart);
+    
+  console.log("getOCRResult POSTing to hostPart " + hostPart + " urlPath " + urlPath);
+
+        var post_options = {
+            host: hostPart,
+            method: 'GET',
+            path: urlPath,
+            headers: {
+                'Ocp-Apim-Subscription-Key': VISUALRECOGNITION_KEY
+            }
+        };
+
+        var post_req = https.request(post_options, function (response) { 		
+
+            var responseText;
+
+            response.on('data', function (rdata) {
+
+                responseText+=rdata;
+            });
+            
+            response.on('end', function () {
+		statusCode = response.statusCode;	
+			
+		if (statusCode != "200") {	                                    // some sort of error, give up
+			stringToRead = stringToRead + ".  HTTP Status Code is " + statusCode;
+			callback(stringToRead); 
+				  
+		} else {  
+			
+		    console.log("getOCRResult returned " + responseText);
+			  
+		    responseText = responseText.replace("undefined", "");
+		    // pull values out of returned info and populate callback text string
+		    jsonResponseText = JSON.parse(responseText);			  
+			  
+		    console.log("ms read text jsonResponseText.status  " + jsonResponseText.status);
+		    OCRStatus = jsonResponseText.status;
+			  
+		    if (OCRStatus == "succeeded") {                         // this is the good case, now pull out all the text
+					
+		       stringToRead = "";                                    // build string starting with empty string
+            
+                       // this just prints out that its an object: console.log("readResults value is " + jsonResponseText.analyzeResult.readResults);
+			      			  
+                       array = jsonResponseText.analyzeResult.readResults;  
+                  
+                       array.forEach(function (item, index) {                 // readResults seems to have just one element, but inside of that are nested elements 
+                          //console.log("readResults " + index, item );
+                       
+                          innerArray = item.lines;
+                          innerArray.forEach(function (innerItem, innerIndex) {
+			     //console.log("readResults sub item  " + innerIndex, innerItem );
+						   
+                             console.log("adding text to string to read " + innerItem.text);
+                             stringToRead += innerItem.text + " ";            // add next line to output string
+                             
+			  });
+				     
+                      });                                
+                
+                                                 
+                  console.log("getOCRResult on end: "+ stringToRead);                                      
+                  callback(stringToRead); 
+		} else {                                                       // OCRSTatus != succeeded
+				    
+		   if (OCRStatus == "failed") {                                // we're done
+			stringToRead += stringToRead + ".  Status is " + OCRStatus;
+			callback(stringToRead);
+					  	
+  		   } else {                                                    // not succeed or failed, still some hope it could work, try again
+					 		
+		      sleep(1000,function() {                                  // wait a second, then recurse
+		          getOCRResult(operationLocation, callback);           // this recursion works to implement do until succeeded or failed
+		      });
+   	           }  
+				    	
+		}	
+	    }                                                                  // statusCode == 200  
+	   })                                                                 // response on end function       
+            
+            
+        });
+          
+        post_req.end();      
+     
+    }    
+// end of OCR functions    
+
+// sleep timer    
+function sleep(time, callback) {
+    var stop = new Date().getTime();
+    while(new Date().getTime() < stop + time) {
+        ;
+    }
+    callback();
+}
+      
